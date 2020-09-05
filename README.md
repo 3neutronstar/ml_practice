@@ -6,4 +6,4 @@ Practice for Machine Learning Course
 
 ### Contributors
 Minsoo Kang, 
-Gihon Lee 
+Gihong Lee 
