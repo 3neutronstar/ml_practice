@@ -11,6 +11,14 @@ t = [0,0,1,0,0,0,0,0,0,0] # 1이 있는 인덱스 즉 2가 정답이라고 가�
 y = [0.1,0.05, 0.6,0.0,0.05,0.1,0.0,0.1,0.0,0.0]
 print(sum_squares_error(np.array(y), np.array(t)))
 
+def softmax(a):
+    c = np.max(a)
+    exp_a = np.exp(a - c)
+    sum_exp_a = np.sum(exp_a)
+    y = exp_a / sum_exp_a
+
+    return y
+
 #교차 엔트로피 오차 (결과값이 작을 수록 오차가 적다는 뜻)
 def cross_entropy_error(y, t) :
     delta = 1e-7
@@ -28,7 +36,7 @@ def cross_entropy_error(y, t):
     return -np.sum(t * np.log(y + 1e-7)) / batch_size
 
 # (배치용) 교차 엔트로피 오차 구현 (one-hot encoding이 아닐 경우에 )
-def cross_entropy_error(y, t):
+def cross_entropy_error1(y, t):
     if y.ndim == 1: #데이터가 하나인 경우에도 쓰일 수 있도록
         t = t.reshape(1, t.size)
         y = y.reshape(1, y.size)
@@ -73,3 +81,29 @@ def funtion_2(x):
 init_X = np.array([-3.0, 4.0])
 print(gradient_descent(funtion_2, init_X = init_X, lr = 0.1, step_num = 100))
 
+# 간단한 신경망을 예를 들어 실제 기울기를 구하는 코드
+class simpleNet:
+    def __init__(self):
+        self.W = np.random.randn(2,3) #정규분포로 초기화
+
+    def predict(self, x):
+        return np.dot(x, self.W)
+
+    def loss(self, x, t):
+        z = self.predict(x)
+        y = softmax(z)
+        loss = cross_entropy_error1(y, t)
+
+        return loss
+
+#ex
+net = simpleNet()
+print(net.W) # 가중치 매개변수
+
+x= np.array([0.6, 0.9])
+p = net.predict(x)
+print(p)
+np.argmax(p)
+
+t = np.array([0,0,1]) #정답레이블
+print(net.loss(x, t))
