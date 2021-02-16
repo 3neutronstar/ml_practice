@@ -13,6 +13,56 @@ import random
 from collections import namedtuple
 from copy import deepcopy
 
+Transition = namedtuple('Transition',
+                        ('state', 'action', 'reward', 'next_state', 'log_prob', 'done'))
+
+
+class ReplayMemory(object):
+
+    def __init__(self, configs, capacity=100000):
+        self.capacity = capacity
+        self.configs = configs
+        self.memory = []
+        self.position = 0
+
+    def push(self, *args):
+        """전환 저장"""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[int(self.position)] = Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+
+    def batch(self):
+        transitions = self.memory
+        batch = Transition(*zip(*transitions))
+
+        # 최종 상태가 아닌 마스크를 계산하고 배치 요소를 연결합니다.
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                                batch.next_state)), device=self.configs['device'], dtype=torch.bool)
+
+        #non_final_mask.reshape(self.configs['batch_size'], 1)
+        # non_final_next_states = torch.tensor([s for s in batch.next_state
+        #                                       if s is not None]).reshape(-1, 1)
+        non_final_next_states = torch.cat([s for s in batch.next_state
+                                           if s is not None], dim=0)
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action, dim=0)  # 안쓰지만 배치함
+        # reward_batch = torch.cat(torch.tensor(batch.reward, dim=0)
+        reward_batch = torch.tensor(batch.reward)
+        next_state_batch = torch.cat(batch.state)
+        log_prob_batch = torch.cat(batch.log_prob)
+        done_batch = torch.tensor(batch.done)
+
+        return state_batch, action_batch, reward_batch, next_state_batch, log_prob_batch, done_batch
+
+    def __len__(self):
+        return len(self.memory)
+
+    def clear_memory(self):
+        del self.memory[:]
+        self.position = 0
+
+
 configs = {
     'num_lanes': 2,
     'model': 'normal',
@@ -44,24 +94,9 @@ DEFAULT_CONFIG = {
     'k_epochs': 4,
     'eps_clip': 0.2,
     'lr_decay_rate': 0.98,
+    'gae': 0.95
 
 }
-
-
-class Memory:
-    def __init__(self):
-        self.actions = []
-        self.states = []
-        self.logprobs = []
-        self.rewards = []
-        self.is_terminals = []
-
-    def clear_memory(self):
-        del self.actions[:]
-        del self.states[:]
-        del self.logprobs[:]
-        del self.rewards[:]
-        del self.is_terminals[:]
 
 
 class RLAlgorithm():
@@ -98,22 +133,6 @@ def merge_dict(d1, d2):
     return merged
 
 
-class Memory:
-    def __init__(self):
-        self.actions = []
-        self.states = []
-        self.logprobs = []
-        self.rewards = []
-        self.dones = []
-
-    def clear_memory(self):
-        del self.actions[:]
-        del self.states[:]
-        del self.logprobs[:]
-        del self.rewards[:]
-        del self.dones[:]
-
-
 class Net(nn.Module):
     def __init__(self, configs):
         super(Net, self).__init__()
@@ -143,29 +162,30 @@ class Trainer(RLAlgorithm):
     def __init__(self, configs):
         self.configs = merge_dict(configs, DEFAULT_CONFIG)
         self.model = Net(self.configs).to(configs['device'])
-        self.memory = Memory()
+        self.experience_replay = ReplayMemory(configs)
         self.optimizer =\
             torch.optim.Adam(self.model.parameters(), lr=self.configs['lr'])
-        self.model_old = Net(self.configs).to(configs['device'])
-        self.model_old.load_state_dict(self.model.state_dict())
         self.eps_clip = self.configs['eps_clip']
         self.lr = self.configs['lr']
         self.lr_decay_rate = self.configs['lr_decay_rate']
         self.criterion = nn.MSELoss()
         self.running_loss = 0
+        self.gae = self.configs['gae']
 
     def get_action(self, state):  # old로 계산
-        probability = self.model_old.actor(state)
+        probability = self.model.actor(state)
         distributions = Categorical(probability)
         action = distributions.sample()
         # print("state:", state)
-
-        self.memory.states.append(state)
-        self.memory.actions.append(action)
-        self.memory.logprobs.append(distributions.log_prob(action))  # 이거 의미
+        self.log_probs = distributions.log_prob(
+            action)  # 이거 의미 자신의 action을 선택한 것의 확률
         # print("action:", action)
 
         return action  # item으로 step에 적용
+
+    def save_replay(self, state, action, reward, next_state, done):
+        self.experience_replay.push(
+            state, action, reward, next_state, self.log_probs, done)
 
     def evaluate(self, state, action):  # 현재로 계산
         action_probs = self.model.actor(state)
@@ -177,51 +197,36 @@ class Trainer(RLAlgorithm):
         return action_logprobs, torch.squeeze(state_value), distributions_entropy
 
     def update(self):
-        rewards = []
-        discounted_reward = 0
-        for reward, done in zip(reversed(self.memory.rewards), reversed(self.memory.dones)):
-            if done:
-                discounted_reward = 0
-            discounted_reward = reward + \
-                (self.configs['gamma']*discounted_reward)
-            rewards.insert(0, discounted_reward)  # 앞으로 삽입
-            print("discount reward", discounted_reward)
+        state, action, reward, next_state, log_probs, done = self.experience_replay.batch()
+        self.experience_replay.clear_memory()
 
-        # normalizing the reward
-        rewards = torch.tensor(
-            rewards, dtype=torch.float).to(configs['device'])
-        rewards = (rewards-rewards.mean()) / (rewards.std()+1e-5)  # epsilon
-
-        # list to tensor
-        old_states = torch.stack(self.memory.states).to(
-            configs['device']).detach()  # no grads by detach
-        old_actions = torch.stack(self.memory.actions).to(
-            configs['device']).detach()
-        old_logprobs = torch.stack(self.memory.logprobs).to(
-            configs['device']).detach()
-        # print("old1:", old_states)
-        # print("old2:", old_actions)
-        # print("old3:", old_logprobs)
         for _ in range(self.configs['k_epochs']):
-            # evaluate old actions and values
-            logprobs, state_values, distributions_entropy = self.evaluate(
-                old_states, old_actions)
+            td_target = reward + \
+                self.configs['gamma']*self.model.critic(next_state)
+            delta = (td_target-self.model.critic(state)).detach()
+            print(delta)
+            advantage = 0.0
+            for delta_t in reversed(range(delta.size()[1])):
+                print(delta_t)
+                advantage = self.configs['gamma'] * \
+                    self.gae*advantage+delta[delta_t]
+                advantage_list.insert(0, advantage)
 
-            # find the ratio (pi_theta/pi_theta_old)
-            ratios = torch.exp(logprobs-old_logprobs.detach())
+            advantage = torch.cat(advantage_list, dtype=torch.float)
+            action_probs = self.model.actor(state)
+            distributions = Categorical(action_probs)
+            action_logprobs = distributions.log_prob(action)
+            ratio = torch.exp(action_logprobs-log_probs)
 
-            # surrogate loss
-            advantages = rewards-state_values.detach()
-            surr1 = ratios*advantages
-            surr2 = torch.clamp(ratios, 1-self.eps_clip,
-                                1+self.eps_clip)*advantages
-            loss = -torch.min(surr1, surr2)+0.5*self.criterion(state_values,
-                                                               rewards)-0.01*distributions_entropy
-            # optimize K epochs
+            surr1 = ratio*advantage
+            surr2 = torch.clamp(ratio, 1-self.eps_clip,
+                                1+self.eps_clip)*advantage
+            loss = -torch.min(surr1, surr2) + \
+                f.criterion(self.model.critic(state), td_target.detach())
+
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
-        self.model_old.load_state_dict(self.model.state_dict())
 
     def update_hyperparams(self, epoch):
 
@@ -256,7 +261,6 @@ step_size = step_size_initial
 learner = Trainer(configs)
 t = 0
 reward = 0
-time_steps = 0
 for e in range(number_of_episodes):
     state = env.reset()
     t = 0
@@ -264,25 +268,20 @@ for e in range(number_of_episodes):
     state = torch.from_numpy(state).reshape(1, -1).float()
     Return = 0
     while not done:
-        time_steps += 1
         t += 1
         action = learner.get_action(state)
         next_state, reward, done, _ = env.step(action.item())
         # print(state, action, reward, next_state, done)
         next_state = torch.from_numpy(next_state).reshape(1, -1).float()
-        learner.memory.rewards.append(reward)
-        learner.memory.dones.append(done)
-
-        if time_steps % update_timesteps == 0:
-            learner.update()
-            learner.memory.clear_memory()
-            time_steps = 0
+        learner.save_replay(state, action, reward, next_state, done)
 
         state = next_state
         Return += reward
         if done:
             break
-        # print("{} {} {} {}".format(state, action, reward, next_state))
+
+    learner.update()
+    # print("{} {} {} {}".format(state, action, reward, next_state))
     if e % 50 == 0:
         learner.update_hyperparams(e)
 

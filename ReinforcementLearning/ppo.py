@@ -162,6 +162,7 @@ class PPO:
             ratios = torch.exp(logprobs - old_logprobs.detach())
 
             # Finding Surrogate Loss:
+            # cumulative reward이므로 state value와 빼면 advantage가나옴
             advantages = rewards - state_values.detach()
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.eps_clip,
@@ -215,12 +216,11 @@ def main():
     running_reward = 0
     avg_length = 0
     timestep = 0
-
+    EPISODE = 10
     # training loop
     for i_episode in range(1, max_episodes+1):
         state = env.reset()
         for t in range(max_timesteps):
-            timestep += 1
 
             # Running policy_old:
             action = ppo.get_action(state)
@@ -231,10 +231,6 @@ def main():
             ppo.memory.is_terminals.append(done)
 
             # update if its time
-            if timestep % update_timestep == 0:
-                ppo.update()
-                ppo.memory.clear_memory()
-                timestep = 0
 
             running_reward += reward
             if render:
@@ -242,6 +238,10 @@ def main():
             if done:
                 break
 
+        if i_episode % EPISODE == 0:
+            ppo.update()
+            ppo.memory.clear_memory()
+            timestep = 0
         avg_length += t
 
         # stop training if avg_reward > solved_reward

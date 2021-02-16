@@ -40,6 +40,7 @@ configs = {
     'mode': 'simulate',
 }
 
+
 class RLAlgorithm():
     def __init__(self, configs):
         super().__init__()
@@ -52,18 +53,17 @@ class RLAlgorithm():
         '''
         raise NotImplementedError
 
-    def update_hyperparams(self,epoch):
+    def update_hyperparams(self, epoch):
         '''
         상속을 위한 함수
         '''
         raise NotImplementedError
 
-    def update_tensorboard(self,writer,epoch):
+    def update_tensorboard(self, writer, epoch):
         '''
         상속을 위한 함수
         '''
         raise NotImplementedError
-
 
 
 Transition = namedtuple('Transition',
@@ -98,6 +98,7 @@ def merge_dict(d1, d2):
             raise KeyError
         merged[key] = d2[key]
     return merged
+
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'reward', 'next_state'))
@@ -252,7 +253,6 @@ class Trainer(RLAlgorithm):
         # decay rate (epsilon greedy)
         if self.epsilon > 0.005:
             self.epsilon *= self.epsilon_decay_rate
-            print(self.epsilon)
 
         # decay learning rate
         if self.lr > 0.01*self.lr:
