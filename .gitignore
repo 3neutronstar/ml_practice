@@ -1,2 +1,3 @@
 /SupervisedLearning/data/*
 /SupervisedLearning/grad_data/*
+.vscode/*
